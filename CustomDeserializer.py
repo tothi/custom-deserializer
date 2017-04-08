@@ -49,7 +49,11 @@ import string
 import re
 from datetime import datetime
 
-__VERSION__ = 1.1
+# 1.2 new feature:
+# when specifying empty parameter with a POST request,
+# the serialization/deserialization is performed on the whole request body
+# + added EDITTABALWAYSENABLED option
+__VERSION__ = 1.2
 EXTENSION_NAME = 'Custom Deserializer '+str(__VERSION__)
 #~ DEBUG = True
 DEBUG = False
@@ -65,6 +69,7 @@ BASE64ENCODINGENABLED = False
 ASCII2HEXENCODINGENABLED = False
 INTRUDERENABLED = False
 SCANNERENABLED = False
+EDITTABALWAYSENABLED = False
 
 #~ if DEBUG:
     #~ import pdb; pdb.set_trace()
@@ -117,7 +122,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
             #~ pdb.set_trace()
         tabPane = JTabbedPane(JTabbedPane.TOP)
         CreditsText = "<html># Burp Custom Deserializer<br/># Copyright (c) 2016, Marco Tinari<br/>#<br/># This program is free software: you can redistribute it and/or modify<br/># it under the terms of the GNU General Public License as published by<br/># the Free Software Foundation, either version 3 of the License, or<br/># (at your option) any later version.<br/>#<br/># This program is distributed in the hope that it will be useful,<br/># but WITHOUT ANY WARRANTY; without even the implied warranty of<br/># MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the<br/># GNU General Public License for more details.<br/>#<br/># You should have received a copy of the GNU General Public License<br/># along with this program.  If not, see <http://www.gnu.org/licenses/>.)<br/></html>"
-        label1 = JLabel("<html>Usage:<br>1 - Select the desired encoding functions<br>2 - Enter the name of the parameter in the input field below and press the Apply button!</html>")
+        label1 = JLabel("<html>Usage:<br>1 - Select the desired encoding functions<br>2 - Enter the name of the parameter in the input field below and press the Apply button!<br><br>Note: when specifying an empty POST parameter name, the serialization/deserialization is performed on the full request body.<br></html>")
         label2 = JLabel(CreditsText)
         panel1 = JPanel()
         #set layout
@@ -130,7 +135,9 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
 
         applyButton = JButton('Apply',actionPerformed=self.reloadConf)
         panel1.add(applyButton, BorderLayout.SOUTH)
-        
+
+        # TODO: organize layout better
+     
         #define GET/POST/COOKIE radio button
         self.GETparameterTypeRadioButton = JRadioButton('GET parameter')
         self.POSTparameterTypeRadioButton = JRadioButton('POST parameter')
@@ -146,6 +153,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         self.ScannerEnabled = JCheckBox("<html>Enable serialization in Burp Scanner<br>Usage:<br>1.Place unencoded values inside intruder request and define the placeholder positions<br>2.rightclick->Actively scan defined insertion points)</html>")
         self.IntruderEnabled = JCheckBox("<html>Enable serialization in Burp Intruder<br>Usage:<br>1.Place unencoded values inside intruder request and define the placeholder positions<br>2.Start the attack</html>")
         self.parameterName = JTextField("Parameter name goes here...",60)
+        self.editTabAlwaysEnabled = JCheckBox("Always enable edit tab")
         
         #set the tooltips
         self.parameterName.setToolTipText("Fill in the parameter name and apply")
@@ -153,10 +161,11 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         self.ASCII2HexEnabled.setToolTipText("Enable ASCII 2 Hex encoding/decoding") 
         self.URLEnabled.setToolTipText("Enable URL encoding/decoding")
         self.IntruderEnabled.setToolTipText("Check this if You want the extension to intercept and modify every request made by the Burp Intruder containing the selected paramter")
-        self.ScannerEnabled.setToolTipText("Check this if You want the extension to intercept and modify every request made by the Burp Scanner containing the selected paramter")
-
+        self.ScannerEnabled.setToolTipText("Check this if You want the extension to intercept and modify every request made by the Burp Scanner containing the selected parameter")
+        
         #add checkboxes to the panel            
         panel1.add(self.parameterName)
+        panel1.add(self.editTabAlwaysEnabled)
         panel1.add(self.POSTparameterTypeRadioButton)
         panel1.add(self.GETparameterTypeRadioButton)
         panel1.add(self.COOKIEparameterTypeRadioButton)
@@ -170,7 +179,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         
     def reloadConf(self,event):
         #~ if DEBUG:
-            #~ import pdb; pdb.set_trace()
+        #~ import pdb; pdb.set_trace()
         source = event.getSource()
         print 'APPLY button clicked. New configuration loaded.'
         global MAGIC_PARAMETER
@@ -182,6 +191,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         global URLENCODINGENABLED
         global INTRUDERENABLED
         global SCANNERENABLED
+        global EDITTABALWAYSENABLED
         MAGIC_PARAMETER=self.parameterName.getText()
         print 'Base64 checkbox is: '+str(self.base64Enabled.isSelected())
         if self.base64Enabled.isSelected(): 
@@ -227,6 +237,12 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
             print "Intruder Enabled"
         else:
             INTRUDERENABLED=False
+        if self.editTabAlwaysEnabled.isSelected():
+            EDITTABALWAYSENABLED=True
+            print "Always enable edit tab"
+        else:
+            EDITTABALWAYSENABLED=False
+            
     #
     # implement IHTTPListener
     #
@@ -239,6 +255,8 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         global ASCII2HEXENCODINGENABLED
         global INTRUDERENABLED
         global SCANNERENABLED
+        global EDITTABALWAYSENABLED
+        global MAGIC_PARAMETER
         #only process requests
         if not messageIsRequest:
             return
@@ -255,17 +273,24 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         if DEBUG: 
             print "Intercepting message at: ", timestamp.isoformat()
         #parameters = requestInfo.getParameters()
-        dataParameter = self._helpers.getRequestParameter(currentRequest.getRequest(), MAGIC_PARAMETER)
-        #FIXME: add exception handling for multiple parameters with the same name and/or in a different position!!!
-        if DEBUG:
-            print 'dataparameter:'+str(dataParameter)
-        if (dataParameter == None):
+        if PARAMETERISPOST and MAGIC_PARAMETER == "":
+            dataParameter = "{full POST body}" # used just for logging
+            bodyOffset = self._helpers.analyzeRequest(currentRequest.getRequest()).getBodyOffset()
             if DEBUG:
-                print 'Parameter does not exist'
-            return
-        serializedValue = dataParameter.getValue()
-        #FIXME: substitute '[AND]' placeholder with '&' charachter - we should do something more elegant here :/
-        serializedValue = re.sub(r'\[AND\]', '&', serializedValue) 
+                print 'dataparameter: full POST body'
+            serializedValue = currentRequest.getRequest()[bodyOffset:]
+        else:
+            dataParameter = self._helpers.getRequestParameter(currentRequest.getRequest(), MAGIC_PARAMETER)
+            #FIXME: add exception handling for multiple parameters with the same name and/or in a different position!!!
+            if DEBUG:
+                print 'dataparameter:'+str(dataParameter)
+            if (dataParameter == None):
+                if DEBUG:
+                    print 'Parameter does not exist'
+                return
+            serializedValue = dataParameter.getValue()
+            #FIXME: substitute '[AND]' placeholder with '&' charachter - we should do something more elegant here :/
+            serializedValue = re.sub(r'\[AND\]', '&', serializedValue) 
         print "unserialized parameter value: ", str(serializedValue)
         if BASE64ENCODINGENABLED: #if base64Encode is selected
             serializedValue = self._helpers.base64Encode(serializedValue)
@@ -283,7 +308,12 @@ class BurpExtender(IBurpExtender, IHttpListener, IMessageEditorTabFactory, ITab)
         if PARAMETERISPOST:
             if DEBUG:
                 print "parameter is BODY"
-            currentRequest.setRequest(self._helpers.updateParameter(currentRequest.getRequest(),self._helpers.buildParameter(MAGIC_PARAMETER, serializedValue,IParameter.PARAM_BODY)))
+            if MAGIC_PARAMETER == "":
+                # build request with original header + serializedValue
+                currentRequest.setRequest(self._helpers.buildHttpMessage(self._helpers.analyzeRequest(currentRequest.getRequest()).getHeaders(), serializedValue))
+                #currentRequest.setRequest(self._helperscurrentRequest.getRequest()[:bodyOffset]+serializedValue)
+            else:
+                currentRequest.setRequest(self._helpers.updateParameter(currentRequest.getRequest(),self._helpers.buildParameter(MAGIC_PARAMETER, serializedValue,IParameter.PARAM_BODY)))
         elif PARAMETERISGET:
             if DEBUG:
                 print "parameter is in URL"
@@ -342,22 +372,29 @@ class CustomInputTab(IMessageEditorTab):
         return self._txtInput.getComponent()
         
     def isEnabled(self, content, isRequest):
+        global EDITTABALWAYSENABLED
         # enable this tab for requests containing a MAGIC_PARAMETER parameter
-        return isRequest and not self._extender._helpers.getRequestParameter(content, MAGIC_PARAMETER) is None
+        return isRequest and ((not self._extender._helpers.getRequestParameter(content, MAGIC_PARAMETER) is None) or EDITTABALWAYSENABLED)
         
     def setMessage(self, content, isRequest):
         global URLENCODINGENABLED
         global BASE64ENCODINGENABLED
         global ASCII2HEXENCODINGENABLED
+        global PARAMETERISPOST
+        global MAGIC_PARAMETER
         if (content is None):
             # clear our display
             self._txtInput.setText(None)
             self._txtInput.setEditable(False)
         else:
-            # retrieve the MAGIC_PARAMETER parameter
-            # FIXME: doed not get the correct parameter when the same parameter name is used both in BODY and URL
-            parameter = self._extender._helpers.getRequestParameter(content, MAGIC_PARAMETER)
-            parametervalue = parameter.getValue()
+            if PARAMETERISPOST and MAGIC_PARAMETER == "":
+                parameter = "" # not used
+                parametervalue = content[self._extender._helpers.analyzeRequest(content).getBodyOffset():]
+            else:
+                # retrieve the MAGIC_PARAMETER parameter
+                # FIXME: does not get the correct parameter when the same parameter name is used both in BODY and URL
+                parameter = self._extender._helpers.getRequestParameter(content, MAGIC_PARAMETER)
+                parametervalue = parameter.getValue()
             # deserialize the MAGIC_PARAMETER value            
             if URLENCODINGENABLED: #URLencoded
                 parametervalue = self._extender._helpers.urlDecode(parametervalue)
@@ -384,6 +421,8 @@ class CustomInputTab(IMessageEditorTab):
         global ASCII2HEXENCODINGENABLED
         global BASE64ENCODINGENABLED
         global URLENCODINGENABLED
+        global PARAMETERISPOST
+        global MAGIC_PARAMETER
         # determine whether the user modified the deserialized data
         if (self._txtInput.isTextModified()):
             # reserialize the data
@@ -410,7 +449,10 @@ class CustomInputTab(IMessageEditorTab):
                 if DEBUG:
                     print "parameter is in BODY"
                     print "parameterispost = " + str(PARAMETERISPOST)
-                return self._extender._helpers.updateParameter(self._currentMessage, self._extender._helpers.buildParameter(MAGIC_PARAMETER, text, IParameter.PARAM_BODY))
+                if MAGIC_PARAMETER == "":
+                    return self._extender._helpers.buildHttpMessage(self._extender._helpers.analyzeRequest(self._currentMessage).getHeaders(), text)
+                else:
+                    return self._extender._helpers.updateParameter(self._currentMessage, self._extender._helpers.buildParameter(MAGIC_PARAMETER, text, IParameter.PARAM_BODY))
             elif PARAMETERISGET:
                 if DEBUG:
                     print "parameter is in URL"
@@ -425,9 +467,7 @@ class CustomInputTab(IMessageEditorTab):
             return self._currentMessage
 
     def isModified(self):
-        
         return self._txtInput.isTextModified()
     
     def getSelectedData(self):
-        
         return self._txtInput.getSelectedText()       	
